@@ -20,16 +20,61 @@ hiding the `LetterBoxModifier` side panels so they don't paint over the now-wide
 
 **Confirmed on a real 3440x1440/21:9 run:** in-game (diving) now renders across the full width.
 
-**Known remaining issues, not yet fixed:**
-- The main menu still shows black bars. `UpdateCanvasScale` is only called a handful of times per
-  session (4 times across a full boot + one dive in the logged test) — the menu's background
-  doesn't appear to go through the same widened camera, or simply has no art beyond the original
-  16:9 bounds to show. Not yet investigated further.
-- During the loading-screen transition into a dive, there's a brief visual glitch: the center
-  16:9 area renders black while the edges already show the (correctly widened) game world behind
-  it, and a character portrait (observed: Cobra) appears oversized/cropped for that one frame or
-  two. Resolves itself once loading finishes. Likely a separate loading-screen UI/camera element
-  that's still anchored to the old 16:9 bounds; not yet investigated.
+**Known remaining issues:**
+- **Main menu still shows black bars — confirmed to be a content limitation, not a bug.**
+  `CameraResolution`'s widened camera from boot (`DR_Start`) persists across all scenes including
+  the menu (confirmed: particle effects — birds, smoke on the title screens — visibly render into
+  the bar area). The bars themselves are genuine empty space: the title-screen background art
+  (Blue Hole / Jungle DLC scenes) was simply never painted past the original 16:9 bounds. No
+  `LetterBoxModifier`-style covering panel is involved for these specific screens (`DR.Title.TitleManager`
+  / `EvilFactory.MainMenuManager` were checked; neither holds a relevant camera or background-image
+  reference). Fixing this would need new background art, not a code patch — treated as a permanent
+  limitation.
+- **HUD/world-tracked UI elements render for a 16:9 canvas, not the real screen — attempted a fix,
+  made it worse, reverted.** See "The HUD problem" below for the full story.
+- Loading-screen transition glitch (brief black center + oversized character portrait during the
+  transition into a dive) not revisited after the HUD investigation; still open.
+
+## The HUD problem
+
+The core camera fix (above) only widens the 3D/2D *world* rendering. Confirmed via a live Canvas
+dump (`UltrawidePatches.LogCanvases`, enumerating `Object.FindObjectsOfType<Canvas>()` plus each
+canvas's direct children) that HUD/UI canvases are a separate, inconsistent story:
+
+- Canvases **with a `CanvasScaler`** (`MainCanvas`, `TalkCanvas`, `LobbyMainCanvas`, …;
+  `referenceResolution=(1920,1080)`, `screenMatchMode=MatchWidthOrHeight`, `matchWidthOrHeight=1`)
+  correctly end up at `width=2580` in canvas units on our 3440x1440/2.39-aspect run — Unity's own
+  CanvasScaler math already accounts for the widened camera correctly, no patch needed.
+- Canvases **without a `CanvasScaler`** — confirmed: `InteractionRoot` (world-tracked interact/pickup
+  prompts — the exact one behind the reported item-pickup-button mispositioning),
+  `CutsceneUI`, `DamageTextPoolPanel`, `EmojiPanel` — stay hardcoded at `1920x1080`, centered,
+  regardless of the real camera size. `PauseMenuPanel` is `RenderMode.WorldSpace`, a different
+  case entirely, not investigated.
+
+**Tried:** `EnableCanvasResizeFix` — a `HarmonyPostfix` on `UpdateCanvasScale` that, for any
+scaler-less `ScreenSpaceCamera` canvas, sets `RectTransform.sizeDelta` directly to
+`(camera.pixelWidth, camera.pixelHeight)`. Deliberately conservative: doesn't touch the
+canvas-unit-to-pixel ratio (still 1:1), just enlarges the bounds, so existing children's absolute
+pixel offsets shouldn't have needed to change.
+
+**Result: confirmed harmful on real hardware, not just "incomplete."** Item-pickup button
+positioning got measurably *worse* and further from the actual item, part of the boat-scene HUD
+disappeared entirely (right half missing), and a fisheye-like distortion appeared near the screen
+edges while diving that wasn't present before. Bottom-right/top-left notification banners
+(ammo pickup, fish-caught) appeared to spawn already inside their old off-canvas "slide in from
+outside" start position, now landing inside the visible area at the true edge instead.
+
+**Interpretation:** the game evidently has *multiple, independent* systems that each make their
+own assumptions about screen/canvas dimensions (world-to-screen conversion for pickup prompts,
+whatever drives the boat-scene HUD, notification slide-in animations, and something producing the
+edge distortion — possibly a post-process effect keyed to `Screen.width`/`Screen.height` or a
+canvas size). Resizing only the canvases we could identify made some of these systems consistent
+with each other and others *more* inconsistent, net negative. A real fix would need to find
+whatever central function(s) actually do the world-to-canvas-space conversion for object-tracked
+UI (likely native code — not visible in the interop stubs, would need Cpp2IL/Il2CppDumper +
+Ghidra decompilation of `GameAssembly.dll`, not attempted) rather than patching individual
+symptoms. `EnableCanvasResizeFix` is left in the code, default OFF, for future research only — do
+not enable it for normal play.
 
 ## Patch safety findings (from real on-device testing)
 

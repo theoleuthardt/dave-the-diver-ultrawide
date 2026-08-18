@@ -19,6 +19,7 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<bool> EnableTargetRatioSpoof { get; private set; } = null!;
     internal static ConfigEntry<bool> EnableCameraRectFix { get; private set; } = null!;
     internal static ConfigEntry<bool> EnableLetterboxHide { get; private set; } = null!;
+    internal static ConfigEntry<bool> EnableCanvasResizeFix { get; private set; } = null!;
 
     public override void Load()
     {
@@ -34,6 +35,9 @@ public class Plugin : BasePlugin
         EnableLetterboxHide = Config.Bind(
             "Patches", "EnableLetterboxHide", true,
             "Hide the decorative LetterBoxModifier side panels (MaskLeft/MaskRight) so they don't cover the now-widened camera view. Confirmed safe.");
+        EnableCanvasResizeFix = Config.Bind(
+            "Patches", "EnableCanvasResizeFix", false,
+            "Resize Screen-Space-Camera Canvases that have no CanvasScaler (InteractionRoot, CutsceneUI, DamageTextPoolPanel, EmojiPanel) from their hardcoded 1920x1080 up to the camera's real pixel size. CONFIRMED HARMFUL on real hardware: made world-tracked HUD prompt positions (e.g. item pickup buttons) worse, broke part of the boat-scene HUD, and introduced a fisheye-looking distortion near the screen edges while diving. Keep this OFF — left in only for further research, do not enable for normal play.");
 
         var harmony = new Harmony(PluginGuid);
         harmony.PatchAll(typeof(UltrawidePatches));

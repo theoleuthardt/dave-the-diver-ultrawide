@@ -2,6 +2,7 @@ using DR.Save;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 namespace DaveTheDiverUltrawide;
 
@@ -111,6 +112,81 @@ internal static class UltrawidePatches
     // (including a MainCamera access in SetResolution's postfix below) — by that point in the
     // pipeline a camera clearly already exists, so it's safe to inspect here.
 
+    private static void LogCanvases(string from)
+    {
+        try
+        {
+            var canvases = Object.FindObjectsOfType<Canvas>();
+            Plugin.Instance.Log.LogInfo($"[Ultrawide] Canvas dump ({from}, scene={SceneTag()}): {canvases.Length} canvas(es)");
+            foreach (Canvas c in canvases)
+            {
+                if (c == null)
+                {
+                    continue;
+                }
+
+                RectTransform rt = c.GetComponent<RectTransform>();
+                string rectInfo = rt != null ? $"rect={rt.rect}" : "no-rect";
+
+                Camera cam = c.renderMode != RenderMode.ScreenSpaceOverlay ? c.worldCamera : null;
+                string camInfo = cam != null
+                    ? $"cam='{cam.name}' camRect={cam.rect} camPixelRect={cam.pixelRect}"
+                    : "no-camera";
+
+                CanvasScaler scaler = c.GetComponent<CanvasScaler>();
+                string scalerInfo = scaler != null
+                    ? $"refRes={scaler.referenceResolution} matchMode={scaler.screenMatchMode} match={scaler.matchWidthOrHeight}"
+                    : "no-scaler";
+
+                Plugin.Instance.Log.LogInfo(
+                    $"[Ultrawide]   Canvas '{c.name}' renderMode={c.renderMode} {rectInfo} {camInfo} {scalerInfo}");
+
+                // Confirmed: some Screen-Space-Camera canvases (InteractionRoot, CutsceneUI,
+                // DamageTextPoolPanel, EmojiPanel) have no CanvasScaler and stay hardcoded at
+                // 1920x1080 instead of following the camera's real (now-widened) pixel size like
+                // MainCanvas/TalkCanvas do. InteractionRoot specifically drives world-tracked HUD
+                // prompts (item pickup buttons etc.), confirmed visibly mispositioned outside the
+                // old 16:9 area. Resize just the canvas bounds (not the unit system — 1 canvas
+                // unit stays 1 pixel, existing children keep their exact pixel offsets) to match.
+                if (Plugin.EnableCanvasResizeFix.Value
+                    && rt != null && scaler == null && cam != null
+                    && c.renderMode == RenderMode.ScreenSpaceCamera)
+                {
+                    Vector2 targetSize = new Vector2(cam.pixelWidth, cam.pixelHeight);
+                    if (rt.sizeDelta != targetSize)
+                    {
+                        Vector2 before = rt.sizeDelta;
+                        rt.sizeDelta = targetSize;
+                        Plugin.Instance.Log.LogInfo(
+                            $"[Ultrawide]   -> Resized Canvas '{c.name}' sizeDelta {before} -> {rt.sizeDelta}");
+                    }
+                }
+
+                if (rt == null)
+                {
+                    continue;
+                }
+
+                int childCount = rt.childCount;
+                for (int i = 0; i < childCount; i++)
+                {
+                    RectTransform child = rt.GetChild(i) as RectTransform;
+                    if (child == null)
+                    {
+                        continue;
+                    }
+
+                    Plugin.Instance.Log.LogInfo(
+                        $"[Ultrawide]     child '{child.name}' anchorMin={child.anchorMin} anchorMax={child.anchorMax} anchoredPosition={child.anchoredPosition} sizeDelta={child.sizeDelta} rect={child.rect}");
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Instance.Log.LogInfo($"[Ultrawide] Canvas dump failed: {ex}");
+        }
+    }
+
     private static string SceneTag()
     {
         try
@@ -161,14 +237,35 @@ internal static class UltrawidePatches
             cam.rect = full;
         }
 
+        // m_CameraViewRect is presumably meant to drive whatever consumes it (HUD safe-area
+        // sizing, going by the field/method names) only when UpdateCanvasViewRect() itself runs —
+        // our direct field write above bypasses that. Call it ourselves so the corrected value
+        // actually propagates, instead of only taking effect the next time the game happens to
+        // call it on its own (which our logging showed doesn't reliably happen again per scene).
+        __instance.UpdateCanvasViewRect();
+
         Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasScale() EXIT (after fix)  scene={SceneTag()} {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
+
+        LogCanvases("UpdateCanvasScale");
     }
 
     [HarmonyPatch(typeof(CameraResolution), "UpdateCanvasViewRect")]
     [HarmonyPostfix]
     private static void UpdateCanvasViewRect_Postfix(CameraResolution __instance)
     {
-        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasViewRect() EXIT scene={SceneTag()} viewRect={__instance.m_CameraViewRect}");
+        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasViewRect() EXIT (before fix) scene={SceneTag()} viewRect={__instance.m_CameraViewRect}");
+
+        if (!Plugin.EnableCameraRectFix.Value)
+        {
+            return;
+        }
+
+        // Defensive/idempotent: if something else calls this with the original pillarboxed value
+        // before our UpdateCanvasScale postfix gets a chance to run, force it back to full here
+        // too. Setting the field again if it's already (0,0,1,1) is a cheap no-op either way.
+        __instance.m_CameraViewRect = new Rect(0f, 0f, 1f, 1f);
+
+        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasViewRect() EXIT (after fix)  scene={SceneTag()} viewRect={__instance.m_CameraViewRect}");
     }
 
     // UpdateAutoResolution and UpdateWideResolution are NOT patched here anymore: patching

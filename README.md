@@ -5,10 +5,11 @@ the themed pillarbox bars Dave the Diver renders on ultrawide monitors (e.g. 21:
 instead of actually using the extra horizontal space.
 
 **Status: core fix confirmed working on a real 3440x1440/21:9 setup — in-game (diving) now renders
-across the full width.** Some rough edges remain (main menu still pillarboxed, a brief visual
-glitch during the loading-screen transition into a dive) — see
-[Known limitations](#known-limitations--open-questions). Developed and tested iteratively; see
-[docs/research-notes.md](docs/research-notes.md) for the full reverse-engineering trail.
+across the full width.** HUD/UI elements still assume 16:9, and an attempted fix for that made
+things worse rather than better (see [Known limitations](#known-limitations--open-questions)); the
+main menu's pillarbox bars are a content limitation, not fixable via code. Developed and tested
+iteratively; see [docs/research-notes.md](docs/research-notes.md) for the full reverse-engineering
+trail.
 
 ## Background
 
@@ -131,13 +132,23 @@ just for read-only logging).
 
 ## Known limitations / open questions
 
-- **Main menu still shows black bars** — not yet investigated why the menu doesn't take the same
-  widened-camera path that gameplay does.
+- **Main menu still shows black bars — this is a content limitation, not a bug.** The widened
+  camera from boot persists into the menu (particle effects visibly render into the bar area), but
+  the title-screen background art itself was never painted past the original 16:9 bounds. Fixing
+  this needs new art, not a code patch.
+- **HUD and world-tracked UI elements (item pickup prompts, notification banners, etc.) still
+  render as if the screen were 16:9.** Investigated and attempted a fix (resizing the specific
+  Canvases that turned out to lack a `CanvasScaler`) — this made things measurably *worse* on real
+  hardware (mispositioned prompts got further off, part of the boat-scene HUD disappeared, a
+  fisheye-like distortion appeared near the edges while diving). The game apparently has multiple
+  independent systems assuming 16:9/1920x1080 that don't agree with each other once only some of
+  them are corrected. See [docs/research-notes.md](docs/research-notes.md) ("The HUD problem") for
+  the full investigation. The experimental patch (`EnableCanvasResizeFix`) is left in the code,
+  OFF by default — do not enable it for normal play.
 - **Brief visual glitch during the loading-screen transition into a dive**: the center 16:9 area
   renders black while the edges already show the widened game world behind it, and a character
   portrait can appear oversized/cropped for a frame or two. Resolves itself once loading finishes.
-  Likely a separate loading-screen UI/camera still anchored to the old 16:9 bounds.
-- HUD/UI elements that assume a 16:9 safe area (e.g. restaurant minigame prompts) not yet checked.
+  Not yet investigated.
 - Cutscenes not yet checked.
 
 ## Contributing / testing
