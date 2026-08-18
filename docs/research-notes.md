@@ -69,12 +69,57 @@ own assumptions about screen/canvas dimensions (world-to-screen conversion for p
 whatever drives the boat-scene HUD, notification slide-in animations, and something producing the
 edge distortion — possibly a post-process effect keyed to `Screen.width`/`Screen.height` or a
 canvas size). Resizing only the canvases we could identify made some of these systems consistent
-with each other and others *more* inconsistent, net negative. A real fix would need to find
-whatever central function(s) actually do the world-to-canvas-space conversion for object-tracked
-UI (likely native code — not visible in the interop stubs, would need Cpp2IL/Il2CppDumper +
-Ghidra decompilation of `GameAssembly.dll`, not attempted) rather than patching individual
-symptoms. `EnableCanvasResizeFix` is left in the code, default OFF, for future research only — do
-not enable it for normal play.
+with each other and others *more* inconsistent, net negative. `EnableCanvasResizeFix` is left in
+the code, default OFF, for future research only — do not enable it for normal play.
+
+### Second attempt: mirror the working CanvasScaler config instead of hand-resizing
+
+`EnableCanvasScalerFix` — instead of setting `sizeDelta` directly, `AddComponent<CanvasScaler>()`
+on the same scaler-less canvases, configured identically to the already-correct `MainCanvas`/
+`TalkCanvas` (`ScaleWithScreenSize`, `referenceResolution=(1920,1080)`, `MatchWidthOrHeight`,
+`match=1`). Hypothesis: since this exact config already produces correct results elsewhere in the
+same game, reusing Unity's own proven-working sizing path (rather than hand-computing a size)
+should be safer than the first attempt.
+
+**Result: no crash, but no improvement either.** Item-pickup prompt positioning was unchanged.
+
+### What the interact-prompt code actually looks like (interop stubs only, no native decompile)
+
+`InteractionIndicatorPanel : InputActionIndicatorPanel` (the "press X to pick up" prompt) —
+`InputActionIndicatorPanel` holds `m_TargetTransform` (world object), `m_Camera`, and
+`m_RectTransform`, with positioning logic in `Update()`/`LateUpdate()`; `InteractionIndicatorPanel`
+adds `ShowInteractionButton(Transform target, Vector3 offset)` /
+`ShowInstantInteractionButton(...)`. Patched all four (postfix, log-only) and captured live data
+while diving:
+
+- `m_Camera` is consistently `MainCamera` with the already-corrected `rect=(0,0,1,1)`,
+  `pixelRect=3440x1440` — the camera reference itself is not stale or wrong.
+- `m_RectTransform.anchoredPosition` and `.rect` read as exactly `(0,0)` / `(0,0,0,0)` on *every*
+  observation, regardless of the target's world position, even though the prompt visibly does
+  move (just to the wrong place) in game. This means the field we're reading either isn't the
+  transform actually being repositioned, or the real positioning write happens somewhere we
+  haven't patched (a pooling/manager class, or a different transform than the one cached in this
+  field) — not resolved with the tools available (interop stubs only show signatures, not bodies).
+
+### Confirmed: only some game modes are affected
+
+Player report from real testing: the interact-prompt positioning bug is **not present** in the
+Sea Blue infiltration (stealth) mission or the Seevolk-Stadt (Sea Tribe city) area — prompts there
+are correctly positioned in ultrawide. It **is** present in normal diving and the sushi restaurant
+(both presumably routed through the broken `InteractionRoot` canvas / `CameraResolution` main
+pipeline, whereas the working areas apparently use a different, already-ultrawide-correct UI path
+— not yet identified which). The mispositioning pattern while diving: correct near screen center,
+increasingly pulled *toward center* the further Dave is from it — consistent with a position
+calculation using a narrower reference width than the real screen, though the fixed `m_RectTransform`
+readings above mean this hasn't been pinned to a specific formula. Also reported as looking
+"relative to camera angle" rather than purely player screen-position, which doesn't fit a simple
+canvas-width mismatch and further points to native projection/FOV-related code we can't see from
+the interop stubs.
+
+**Conclusion: further progress needs native decompilation of `GameAssembly.dll`** (Cpp2IL/
+Il2CppDumper + Ghidra) to actually read the positioning math, rather than continuing to guess at
+symptoms from the managed interop stubs, which only expose signatures and field layouts — not
+method bodies for IL2CPP-compiled code.
 
 ## Patch safety findings (from real on-device testing)
 

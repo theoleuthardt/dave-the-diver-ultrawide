@@ -162,6 +162,21 @@ internal static class UltrawidePatches
                     }
                 }
 
+                // Different approach to the same problem, mirroring the CanvasScaler config that
+                // already correctly widens MainCanvas/TalkCanvas instead of hand-computing a size.
+                if (Plugin.EnableCanvasScalerFix.Value
+                    && scaler == null && cam != null
+                    && c.renderMode == RenderMode.ScreenSpaceCamera)
+                {
+                    CanvasScaler added = c.gameObject.AddComponent<CanvasScaler>();
+                    added.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+                    added.referenceResolution = new Vector2(1920f, 1080f);
+                    added.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+                    added.matchWidthOrHeight = 1f;
+                    Plugin.Instance.Log.LogInfo(
+                        $"[Ultrawide]   -> Added CanvasScaler to '{c.name}' (refRes 1920x1080, match=1)");
+                }
+
                 if (rt == null)
                 {
                     continue;
@@ -293,4 +308,101 @@ internal static class UltrawidePatches
     // overload by argument types needs typeof(int).MakeByRefType(), not typeof(int), and getting
     // that wrong makes Harmony reject the whole PatchAll batch (as it just did here) rather than
     // just skipping this one patch. Not essential to the diagnosis, so left unpatched for now.
+
+    // ---- Item-pickup / interact-prompt investigation ----
+    //
+    // InteractionIndicatorPanel : InputActionIndicatorPanel drives the world-tracked "press X to
+    // pick up" prompt. The base class holds m_TargetTransform (the world object), m_Camera, and
+    // m_RectTransform, and does its positioning in Update()/LateUpdate(). Logging here (not the
+    // Canvas-resize approach, which made things worse) to see the actual numbers involved before
+    // guessing at a fix. Only logs while a target is actually assigned (prompt visible), so this
+    // shouldn't spam the log during normal play with no nearby interactable.
+    private static int _indicatorLogFrameCounter;
+
+    private static string DescribeIndicator(string from, InputActionIndicatorPanel instance)
+    {
+        Transform target = instance.m_TargetTransform;
+        RectTransform rt = instance.m_RectTransform;
+        Camera cam = instance.m_Camera;
+
+        string targetInfo = target != null ? $"target='{target.name}' targetWorldPos={target.position}" : "target=null";
+        string rtInfo = rt != null
+            ? $"anchoredPosition={rt.anchoredPosition} worldPos={rt.position} localPos={rt.localPosition} rect={rt.rect} parent='{(rt.parent != null ? rt.parent.name : "null")}'"
+            : "m_RectTransform=null";
+        string camInfo = cam != null
+            ? $"cam='{cam.name}' rect={cam.rect} pixelRect={cam.pixelRect}"
+            : "m_Camera=null";
+
+        return $"[Ultrawide] {from} {targetInfo} {rtInfo} {camInfo}";
+    }
+
+    [HarmonyPatch(typeof(InputActionIndicatorPanel), "LateUpdate")]
+    [HarmonyPostfix]
+    private static void InputActionIndicatorPanel_LateUpdate_Postfix(InputActionIndicatorPanel __instance)
+    {
+        try
+        {
+            if (__instance.m_TargetTransform == null)
+            {
+                return;
+            }
+
+            // One line roughly every 30 frames (~0.5s at 60fps) while a prompt is visible —
+            // enough to see it drift as the player moves, without flooding the log.
+            _indicatorLogFrameCounter++;
+            if (_indicatorLogFrameCounter % 30 != 0)
+            {
+                return;
+            }
+
+            Plugin.Instance.Log.LogInfo(DescribeIndicator("LateUpdate", __instance));
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Instance.Log.LogInfo($"[Ultrawide] InputActionIndicatorPanel diagnostic failed: {ex}");
+        }
+    }
+
+    [HarmonyPatch(typeof(InputActionIndicatorPanel), "Update")]
+    [HarmonyPostfix]
+    private static void InputActionIndicatorPanel_Update_Postfix(InputActionIndicatorPanel __instance)
+    {
+        try
+        {
+            if (__instance.m_TargetTransform == null)
+            {
+                return;
+            }
+
+            _indicatorLogFrameCounter++;
+            if (_indicatorLogFrameCounter % 30 != 0)
+            {
+                return;
+            }
+
+            Plugin.Instance.Log.LogInfo(DescribeIndicator("Update", __instance));
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Instance.Log.LogInfo($"[Ultrawide] InputActionIndicatorPanel diagnostic failed: {ex}");
+        }
+    }
+
+    [HarmonyPatch(typeof(InteractionIndicatorPanel), "ShowInteractionButton",
+        new[] { typeof(Transform), typeof(Vector3) })]
+    [HarmonyPostfix]
+    private static void ShowInteractionButton_Postfix(InteractionIndicatorPanel __instance, Transform target, Vector3 offset)
+    {
+        Plugin.Instance.Log.LogInfo(
+            $"{DescribeIndicator("ShowInteractionButton", __instance)} offset={offset}");
+    }
+
+    [HarmonyPatch(typeof(InteractionIndicatorPanel), "ShowInstantInteractionButton",
+        new[] { typeof(Transform), typeof(Vector3) })]
+    [HarmonyPostfix]
+    private static void ShowInstantInteractionButton_Postfix(InteractionIndicatorPanel __instance, Transform target, Vector3 offset)
+    {
+        Plugin.Instance.Log.LogInfo(
+            $"{DescribeIndicator("ShowInstantInteractionButton", __instance)} offset={offset}");
+    }
 }
