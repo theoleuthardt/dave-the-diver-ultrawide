@@ -73,6 +73,17 @@ tasks:
     cmds:
       - grep -E "\[Ultrawide\]|Ultrawide Fix|HarmonyX.*Error" "{{.GAME_DIR}}/BepInEx/LogOutput.log" || true
 
+  package:
+    desc: 'Copy the last build''s DLL+PDB into dist/ for a GitHub release. Run "task build CONFIG=Release" first, then "task package CONFIG=Release", then commit dist/ and trigger the Release workflow.'
+    preconditions:
+      - sh: test -f "{{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll"
+        msg: 'No build output found at {{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll — run "task build CONFIG={{.CONFIG}}" first'
+    cmds:
+      - mkdir -p "dist/{{.PLUGIN_NAME}}"
+      - cp "{{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll" "dist/{{.PLUGIN_NAME}}/"
+      - cp "{{.OUT_DIR}}/{{.PLUGIN_NAME}}.pdb" "dist/{{.PLUGIN_NAME}}/"
+      - echo "Packaged to dist/{{.PLUGIN_NAME}}/ — commit this before triggering the Release workflow"
+
   decompile:
     desc: 'Decompile one type from the game''s interop assembly, e.g.: task decompile TYPE=CameraResolution'
     preconditions:

@@ -1,6 +1,7 @@
 using DR.Save;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace DaveTheDiverUltrawide;
 
@@ -49,7 +50,7 @@ internal static class UltrawidePatches
     [HarmonyPostfix]
     private static void SetResolution_Postfix(CameraResolution __instance)
     {
-        Plugin.Instance.Log.LogInfo($"[Ultrawide] SetResolution() EXIT {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
+        Plugin.Instance.Log.LogInfo($"[Ultrawide] SetResolution() EXIT scene={SceneTag()} {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
     }
 
     // UpdateCameraRect is confirmed never called during startup/menu (0 hits across many runs).
@@ -91,7 +92,7 @@ internal static class UltrawidePatches
         if (instance.gameObject.activeSelf)
         {
             Plugin.Instance.Log.LogInfo(
-                $"[Ultrawide] Hiding LetterBoxModifier '{instance.gameObject.name}' (triggered by {from})");
+                $"[Ultrawide] Hiding LetterBoxModifier '{instance.gameObject.name}' (triggered by {from}) scene={SceneTag()}");
         }
 
         instance.gameObject.SetActive(false);
@@ -109,6 +110,18 @@ internal static class UltrawidePatches
     // SetResolution and UpdateCanvasScale, by contrast, have now run cleanly multiple times
     // (including a MainCamera access in SetResolution's postfix below) — by that point in the
     // pipeline a camera clearly already exists, so it's safe to inspect here.
+
+    private static string SceneTag()
+    {
+        try
+        {
+            return SceneManager.GetActiveScene().name;
+        }
+        catch
+        {
+            return "?";
+        }
+    }
 
     private static string DescribeCamera(CameraResolution instance)
     {
@@ -132,7 +145,7 @@ internal static class UltrawidePatches
     [HarmonyPostfix]
     private static void UpdateCanvasScale_Postfix(CameraResolution __instance)
     {
-        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasScale() EXIT (before fix) {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
+        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasScale() EXIT (before fix) scene={SceneTag()} {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
 
         if (!Plugin.EnableCameraRectFix.Value)
         {
@@ -148,14 +161,14 @@ internal static class UltrawidePatches
             cam.rect = full;
         }
 
-        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasScale() EXIT (after fix)  {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
+        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasScale() EXIT (after fix)  scene={SceneTag()} {DescribeCamera(__instance)} viewRect={__instance.m_CameraViewRect}");
     }
 
     [HarmonyPatch(typeof(CameraResolution), "UpdateCanvasViewRect")]
     [HarmonyPostfix]
     private static void UpdateCanvasViewRect_Postfix(CameraResolution __instance)
     {
-        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasViewRect() EXIT viewRect={__instance.m_CameraViewRect}");
+        Plugin.Instance.Log.LogInfo($"[Ultrawide] UpdateCanvasViewRect() EXIT scene={SceneTag()} viewRect={__instance.m_CameraViewRect}");
     }
 
     // UpdateAutoResolution and UpdateWideResolution are NOT patched here anymore: patching

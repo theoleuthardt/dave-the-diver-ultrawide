@@ -1,0 +1,51 @@
+name: Release
+
+# Manually triggered only. This workflow does NOT compile the mod — building requires the
+# BepInEx/interop/*.dll assemblies generated from a real, purchased copy of the game, which we
+# don't redistribute or fetch in CI. Instead: build and package locally with
+#   task build CONFIG=Release && task package CONFIG=Release
+# commit the resulting dist/ folder, then run this workflow to zip it and publish a GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag, e.g. v0.4.0"
+        required: true
+      title:
+        description: "Release title (defaults to the tag)"
+        required: false
+      notes:
+        description: "Release notes (defaults to a generic install pointer)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify dist/ has a build to publish
+        run: |
+          if [ ! -d "dist/DaveTheDiverUltrawide" ] || [ -z "$(ls -A dist/DaveTheDiverUltrawide 2>/dev/null)" ]; then
+            echo "::error::dist/DaveTheDiverUltrawide is empty. Run 'task build CONFIG=Release && task package CONFIG=Release' locally and commit dist/ before triggering this workflow."
+            exit 1
+          fi
+
+      - name: Zip release asset
+        run: |
+          cd dist
+          zip -r "../DaveTheDiverUltrawide-${{ github.event.inputs.version }}.zip" DaveTheDiverUltrawide
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ github.event.inputs.notes || 'See README.md for installation instructions. Extract the zip into the Dave the Diver/BepInEx/plugins/ folder.' }}
+        run: |
+          gh release create "${{ github.event.inputs.version }}" \
+            "DaveTheDiverUltrawide-${{ github.event.inputs.version }}.zip" \
+            --title "${{ github.event.inputs.title || github.event.inputs.version }}" \
+            --notes "$RELEASE_NOTES"

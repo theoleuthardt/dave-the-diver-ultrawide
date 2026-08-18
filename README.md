@@ -64,8 +64,24 @@ the environment variable — see [Directory.Build.props](Directory.Build.props) 
 
 ## Installing (without building)
 
-Grab `DaveTheDiverUltrawide.dll` from a release (once one exists) and drop it into
+Grab `DaveTheDiverUltrawide.dll` from a [release](../../releases) and drop it into
 `Dave the Diver/BepInEx/plugins/DaveTheDiverUltrawide/`.
+
+## Releasing
+
+The [Release workflow](.github/workflows/release.yml) is manually triggered
+(`workflow_dispatch`) and only packages + publishes — it does not compile, since that needs the
+game's interop DLLs which aren't (and shouldn't be) available in CI. To cut a release:
+
+```sh
+task build CONFIG=Release
+task package CONFIG=Release   # copies dll+pdb into dist/DaveTheDiverUltrawide/
+git add dist && git commit -m "Package vX.Y.Z"
+git push
+```
+
+Then run the *Release* workflow from the GitHub Actions tab (or `gh workflow run release.yml -f
+version=vX.Y.Z`), which zips `dist/` and publishes it as a GitHub Release.
 
 ## How it works (current approach)
 
