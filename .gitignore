@@ -7,3 +7,8 @@ obj/
 
 # Local override of the game install path, never commit a machine-specific path
 Directory.Build.local.props
+
+# Native-decompiled (Cpp2IL IL-recovery) source, closer to actual game source than the interop
+# stubs used elsewhere in this repo — kept local-only, not committed. See native-decompile/README.md.
+native-decompile/*
+!native-decompile/README.md
