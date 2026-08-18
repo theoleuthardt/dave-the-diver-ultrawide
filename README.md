@@ -5,11 +5,12 @@ the themed pillarbox bars Dave the Diver renders on ultrawide monitors (e.g. 21:
 instead of actually using the extra horizontal space.
 
 **Status: core fix confirmed working on a real 3440x1440/21:9 setup — in-game (diving) now renders
-across the full width.** HUD/UI elements still assume 16:9, and an attempted fix for that made
-things worse rather than better (see [Known limitations](#known-limitations--open-questions)); the
-main menu's pillarbox bars are a content limitation, not fixable via code. Developed and tested
-iteratively; see [docs/research-notes.md](docs/research-notes.md) for the full reverse-engineering
-trail.
+across the full width.** HUD/world-tracked UI elements (item pickup prompts etc.) still render as
+if the screen were 16:9; two Canvas-based fix attempts didn't work, but native decompilation (see
+[docs/research-notes.md](docs/research-notes.md)) found the real mechanism and a third attempt
+targeting it is implemented and awaiting real-hardware testing. The main menu's pillarbox bars are
+a content limitation, not fixable via code. See
+[Known limitations](#known-limitations--open-questions) for details.
 
 ## Background
 
@@ -123,6 +124,10 @@ See [`UltrawidePatches.cs`](src/DaveTheDiverUltrawide/UltrawidePatches.cs) and
    field, but this is **confirmed to crash the game** on scene load and is OFF by default
    (`EnableTargetRatioSpoof`, see `Plugin.cs`). Not needed for the actual fix — left in as a
    documented dead end so nobody retries it blindly.
+4. **`InputActionIndicatorPanel.LateUpdate` (prefix)** — targets the item-pickup-prompt
+   mispositioning specifically: forces the camera used by the prompt's `WorldToViewportPoint` call
+   to a full rect and un-locks its aspect (`Camera.ResetAspect()`) every frame, right before the
+   game's own positioning code runs. Not yet confirmed working — see Known limitations.
 
 All patches log what they see/change to `BepInEx/LogOutput.log` (`[Ultrawide]` prefix) so behavior
 can be diagnosed without a debugger attached to a Proton process. `CameraResolution.UpdateCameraRect`
@@ -137,14 +142,18 @@ just for read-only logging).
   the title-screen background art itself was never painted past the original 16:9 bounds. Fixing
   this needs new art, not a code patch.
 - **HUD and world-tracked UI elements (item pickup prompts, notification banners, etc.) still
-  render as if the screen were 16:9.** Investigated and attempted a fix (resizing the specific
-  Canvases that turned out to lack a `CanvasScaler`) — this made things measurably *worse* on real
-  hardware (mispositioned prompts got further off, part of the boat-scene HUD disappeared, a
-  fisheye-like distortion appeared near the edges while diving). The game apparently has multiple
-  independent systems assuming 16:9/1920x1080 that don't agree with each other once only some of
-  them are corrected. See [docs/research-notes.md](docs/research-notes.md) ("The HUD problem") for
-  the full investigation. The experimental patch (`EnableCanvasResizeFix`) is left in the code,
-  OFF by default — do not enable it for normal play.
+  render as if the screen were 16:9.** Two Canvas-size-based fix attempts didn't work
+  (`EnableCanvasResizeFix` was actively harmful on real hardware; `EnableCanvasScalerFix` was a
+  no-op) — native decompilation (Cpp2IL, see [docs/research-notes.md](docs/research-notes.md),
+  "The HUD problem") revealed why: the positioning is anchor-*fraction* based
+  (`Camera.WorldToViewportPoint` → `RectTransform.anchorMin`/`anchorMax`), which doesn't depend on
+  canvas size at all — both attempts were targeting the wrong layer. A third attempt
+  (`EnableIndicatorCameraFix`) targets the actual mechanism (forces the camera used by
+  `WorldToViewportPoint` to a full rect + `Camera.ResetAspect()` every frame, right before the
+  game's own code uses it) — implemented and deployed, but **not yet confirmed working on real
+  hardware**. Both older experimental patches are left in the code, OFF by default — do not enable
+  them for normal play; only `EnableIndicatorCameraFix` (and its `EnableCameraManagerCrossCheck`
+  sub-part) are worth testing here.
 - **Brief visual glitch during the loading-screen transition into a dive**: the center 16:9 area
   renders black while the edges already show the widened game world behind it, and a character
   portrait can appear oversized/cropped for a frame or two. Resolves itself once loading finishes.

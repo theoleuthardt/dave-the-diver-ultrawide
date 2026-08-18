@@ -10,7 +10,7 @@ public class Plugin : BasePlugin
 {
     public const string PluginGuid = "theo.davethediver.ultrawidefix";
     public const string PluginName = "Dave the Diver Ultrawide Fix";
-    public const string PluginVersion = "0.4.0";
+    public const string PluginVersion = "0.5.0";
 
     internal static Plugin Instance { get; private set; } = null!;
 
@@ -21,6 +21,8 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<bool> EnableLetterboxHide { get; private set; } = null!;
     internal static ConfigEntry<bool> EnableCanvasResizeFix { get; private set; } = null!;
     internal static ConfigEntry<bool> EnableCanvasScalerFix { get; private set; } = null!;
+    internal static ConfigEntry<bool> EnableCameraManagerCrossCheck { get; private set; } = null!;
+    internal static ConfigEntry<bool> EnableIndicatorCameraFix { get; private set; } = null!;
 
     public override void Load()
     {
@@ -42,6 +44,12 @@ public class Plugin : BasePlugin
         EnableCanvasScalerFix = Config.Bind(
             "Patches", "EnableCanvasScalerFix", false,
             "Different approach to the same problem as EnableCanvasResizeFix (keep that one OFF too): instead of directly resizing scaler-less Screen-Space-Camera canvases (InteractionRoot, CutsceneUI, DamageTextPoolPanel, EmojiPanel), add a CanvasScaler to them configured exactly like the already-correctly-widening MainCanvas/TalkCanvas (ScaleWithScreenSize, referenceResolution 1920x1080, MatchWidthOrHeight, match=1). CONFIRMED INEFFECTIVE on real hardware: no crash, but item-pickup prompt positioning was unchanged — still appears tied to camera angle, not just canvas size. Root cause needs native decompilation (see docs/research-notes.md). Keep this OFF.");
+        EnableIndicatorCameraFix = Config.Bind(
+            "Patches", "EnableIndicatorCameraFix", true,
+            "NEW (untested on real hardware yet): every frame the item-pickup prompt is visible, forces InputActionIndicatorPanel.m_Camera back to a full rect and calls Camera.ResetAspect() on it, right before the game's own LateUpdate computes the prompt's screen position via WorldToViewportPoint. Targets the actual native-decompiled positioning code directly, unlike the two Canvas-based attempts above (which could never have worked — the positioning is anchor-fraction based, not canvas-size based). See docs/research-notes.md.");
+        EnableCameraManagerCrossCheck = Config.Bind(
+            "Patches", "EnableCameraManagerCrossCheck", true,
+            "Sub-part of EnableIndicatorCameraFix (has no effect if that's off): also checks whether EvilFactory.CameraManager.mainCamera is a *different* Camera object than the one InputActionIndicatorPanel uses, and fixes that one too if so. Previously lived in CameraResolution.UpdateCanvasScale and CONFIRMED TO CRASH THE GAME there (ran too early, before any dive scene/CameraManager existed) — moved here, where it only ever runs once an interact prompt is actually visible, i.e. guaranteed to be in a real gameplay scene. Should be safe now, but watch BepInEx/LogOutput.log after enabling.");
 
         var harmony = new Harmony(PluginGuid);
         harmony.PatchAll(typeof(UltrawidePatches));

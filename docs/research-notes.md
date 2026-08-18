@@ -30,8 +30,14 @@ hiding the `LetterBoxModifier` side panels so they don't paint over the now-wide
   / `EvilFactory.MainMenuManager` were checked; neither holds a relevant camera or background-image
   reference). Fixing this would need new background art, not a code patch — treated as a permanent
   limitation.
-- **HUD/world-tracked UI elements render for a 16:9 canvas, not the real screen — attempted a fix,
-  made it worse, reverted.** See "The HUD problem" below for the full story.
+- **HUD/world-tracked UI elements render for a 16:9 canvas, not the real screen.** Two Canvas-size
+  based fix attempts didn't work (one harmful, one no-op) because — per native decompilation, see
+  "The HUD problem" — the positioning is anchor-*fraction* based, not canvas-size based, so canvas
+  size was never the actual lever to pull. A third attempt targeting the real mechanism
+  (`EnableIndicatorCameraFix`, forcing the camera used by `WorldToViewportPoint` to a full rect +
+  `Camera.ResetAspect()` every frame, right before the game's own positioning code runs) is
+  implemented and deployed but **not yet tested on real hardware** — see "The HUD problem" for the
+  full reasoning and exact hypotheses it targets.
 - Loading-screen transition glitch (brief black center + oversized character portrait during the
   transition into a dive) not revisited after the HUD investigation; still open.
 
@@ -83,43 +89,104 @@ should be safer than the first attempt.
 
 **Result: no crash, but no improvement either.** Item-pickup prompt positioning was unchanged.
 
-### What the interact-prompt code actually looks like (interop stubs only, no native decompile)
-
-`InteractionIndicatorPanel : InputActionIndicatorPanel` (the "press X to pick up" prompt) —
-`InputActionIndicatorPanel` holds `m_TargetTransform` (world object), `m_Camera`, and
-`m_RectTransform`, with positioning logic in `Update()`/`LateUpdate()`; `InteractionIndicatorPanel`
-adds `ShowInteractionButton(Transform target, Vector3 offset)` /
-`ShowInstantInteractionButton(...)`. Patched all four (postfix, log-only) and captured live data
-while diving:
-
-- `m_Camera` is consistently `MainCamera` with the already-corrected `rect=(0,0,1,1)`,
-  `pixelRect=3440x1440` — the camera reference itself is not stale or wrong.
-- `m_RectTransform.anchoredPosition` and `.rect` read as exactly `(0,0)` / `(0,0,0,0)` on *every*
-  observation, regardless of the target's world position, even though the prompt visibly does
-  move (just to the wrong place) in game. This means the field we're reading either isn't the
-  transform actually being repositioned, or the real positioning write happens somewhere we
-  haven't patched (a pooling/manager class, or a different transform than the one cached in this
-  field) — not resolved with the tools available (interop stubs only show signatures, not bodies).
-
 ### Confirmed: only some game modes are affected
 
 Player report from real testing: the interact-prompt positioning bug is **not present** in the
 Sea Blue infiltration (stealth) mission or the Seevolk-Stadt (Sea Tribe city) area — prompts there
-are correctly positioned in ultrawide. It **is** present in normal diving and the sushi restaurant
-(both presumably routed through the broken `InteractionRoot` canvas / `CameraResolution` main
-pipeline, whereas the working areas apparently use a different, already-ultrawide-correct UI path
-— not yet identified which). The mispositioning pattern while diving: correct near screen center,
-increasingly pulled *toward center* the further Dave is from it — consistent with a position
-calculation using a narrower reference width than the real screen, though the fixed `m_RectTransform`
-readings above mean this hasn't been pinned to a specific formula. Also reported as looking
-"relative to camera angle" rather than purely player screen-position, which doesn't fit a simple
-canvas-width mismatch and further points to native projection/FOV-related code we can't see from
-the interop stubs.
+are correctly positioned in ultrawide. It **is** present in normal diving and the sushi restaurant.
+The mispositioning pattern while diving: correct near screen center, increasingly pulled *toward
+center* the further Dave is from it, and reported as looking "relative to camera angle" rather
+than purely player screen-position.
 
-**Conclusion: further progress needs native decompilation of `GameAssembly.dll`** (Cpp2IL/
-Il2CppDumper + Ghidra) to actually read the positioning math, rather than continuing to guess at
-symptoms from the managed interop stubs, which only expose signatures and field layouts — not
-method bodies for IL2CPP-compiled code.
+### Native decompilation via Cpp2IL (the interop stubs only show signatures, not method bodies)
+
+The tagged Cpp2IL GitHub releases are far too old for this game's IL2CPP metadata version (v31 —
+they cap out at v29). The actively-developed nightly/CI build supports it:
+
+```sh
+curl -sL -o Cpp2IL.zip "https://nightly.link/SamboyCoding/Cpp2IL/workflows/dotnet-core/development/Cpp2IL-net9-linux-x64.zip"
+unzip Cpp2IL.zip -d cpp2il && chmod +x cpp2il/Cpp2IL
+./cpp2il/Cpp2IL --game-path "/path/to/Dave the Diver" --output-as dll_il_recovery --output-to ./out
+```
+
+Took about a minute against this game's 138MB `GameAssembly.dll`, and reported **100% of methods
+successfully decompiled (188248 / 188253)** — meaning `./out/Assembly-CSharp.dll` has actual
+recovered method *bodies*, decompilable with the same `ilspycmd` used everywhere else in this repo
+(`ilspycmd -t Namespace.TypeName ./out/Assembly-CSharp.dll`), instead of the empty
+`il2cpp_runtime_invoke` stub wrappers the BepInEx-generated interop assembly has. Not perfect —
+some methods (especially ones doing heavy Vector2/Vector3 struct/SIMD field access) come out
+garbled with `Cpp2ILHelpers.NoteDecompilerIssue(...)` calls and nonsensical casts — but enough to
+read real control flow and spot real API calls. See `native-decompile/README.md` for the full
+regeneration steps (the recovered `.cs` files themselves are gitignored, not committed — see that
+README for why).
+
+### What `InputActionIndicatorPanel.LateUpdate` actually does
+
+Recovered (lightly cleaned up from the garbled decompile — the exact `Vector2` assignment details
+are lost, but the control flow and API calls are clear):
+
+```csharp
+private void LateUpdate()
+{
+    if (m_TargetTransform != null)
+    {
+        Vector3 viewportPoint = m_Camera.WorldToViewportPoint(m_TargetTransform.position /* + m_Offset */);
+        // ... a Singleton<EvilFactory.CameraManager>.Instance reference the decompile couldn't
+        //     fully resolve — presumably used somewhere in what follows ...
+        m_RectTransform.anchorMin = /* derived from viewportPoint.x/y */;
+        m_RectTransform.anchorMax = /* the same value */;
+        m_RectTransform.localScale = /* not fully resolved either */;
+    }
+}
+```
+
+Two things this settles that weren't clear from the interop stubs alone:
+
+1. **Positioning is anchor-*fraction* based** (`anchorMin`/`anchorMax`, both set to the same [0,1]
+   viewport fraction from `WorldToViewportPoint`), not `anchoredPosition`-based. This is why the
+   earlier `m_RectTransform.anchoredPosition` readings were *always* `(0,0)` regardless of target
+   position — that's not a symptom of anything broken, it's simply the wrong field to look at. The
+   actually-informative fields are `.position` (world) / `.localPosition`, which do vary
+   per-target as expected.
+2. **Anchor-fraction positioning is inherently resolution/canvas-size independent.** A fraction of
+   e.g. `0.75` always means "75% across the parent", whether the parent canvas is 1920, 2580, or
+   3440 units wide. **This means `EnableCanvasResizeFix` and `EnableCanvasScalerFix` (both of which
+   only ever changed canvas *size*) could never have fixed this bug, regardless of how correctly
+   implemented — they were solving the wrong problem.** The real bug has to be in what
+   `WorldToViewportPoint` itself returns, or the (invisible, decompile-lost) `CameraManager`-related
+   step in between.
+
+### Two hypotheses for why the viewport fraction itself comes out wrong, and the fix that targets both
+
+1. **`Camera.aspect` can be manually locked in Unity** (the setter overrides auto-computation from
+   `pixelWidth`/`pixelHeight`, and stays locked until `Camera.ResetAspect()` is called). If
+   something set it once for the original 16:9 pillarbox and never reset it, `WorldToViewportPoint`
+   would keep computing fractions for the old narrow aspect even though rendering itself
+   (`camera.rect`) is already correct — exactly matching "world renders fine, but position math
+   pulled toward center."
+2. **`m_Camera` (cached via `Camera.main` in `Awake()`) might not be the same Camera object as
+   `EvilFactory.CameraManager.mainCamera`** (that class independently caches
+   `GetComponent<Camera>()` on itself in its own `Awake()`, per the native decompile of
+   `EvilFactory.CameraManager`). If they differ, fixing one doesn't fix the other. Tried checking
+   this via `EvilFactory.SceneSingleton<CameraManager>.hasInstance`/`.Instance` from
+   `CameraResolution.UpdateCanvasScale` — **`hasInstance` read `false` on all 23 samples across a
+   full boot+dive+sushi-restaurant session**, meaning `UpdateCanvasScale` fires too early/rarely
+   per scene to ever catch a `CameraManager` that exists (and accessing `.Instance` unconditionally
+   there, when a genuine early-boot scene had no instance yet, is what caused the crash described
+   in "Patch safety findings" below) — this check needed to move somewhere that only runs when a
+   `CameraManager` is guaranteed to already exist.
+
+**Fix (`EnableIndicatorCameraFix` + `EnableCameraManagerCrossCheck`, implemented, not yet tested):**
+a `HarmonyPrefix` on `InputActionIndicatorPanel.LateUpdate` — the same method already safely
+postfix-patched for logging in earlier sessions — that runs only when `m_TargetTransform != null`
+(i.e. only once a prompt is actually visible, which is only ever true during real gameplay, after
+whatever scene's `CameraManager` has already initialized — sidestepping the early-boot timing
+problem entirely). Each frame, right before the original method runs: forces `m_Camera.rect` to
+`(0,0,1,1)` and calls `m_Camera.ResetAspect()` (covers hypothesis 1); then, if
+`EvilFactory.SceneSingleton<CameraManager>.hasInstance` and its `mainCamera` is a *different*
+`Camera` instance (compared by `GetInstanceID()`), does the same fix to that camera too (covers
+hypothesis 2). All wrapped in try/catch, cheap enough to run every frame. See
+`UltrawidePatches.InputActionIndicatorPanel_LateUpdate_Prefix`.
 
 ## Patch safety findings (from real on-device testing)
 
@@ -152,6 +219,13 @@ constraints for any future patch on this class, not just historical trivia:
   comes from patching the method at all (same class of problem as `UpdateWideResolution`) or
   specifically from touching `MainCamera` this early in boot before a camera exists. Needs a
   narrower experiment (entry/exit log only, no property access) before retrying.
+- **`EvilFactory.SceneSingleton<EvilFactory.CameraManager>.Instance`, accessed unconditionally from
+  `CameraResolution.UpdateCanvasScale`'s postfix, crashes the game at the same very-early boot
+  splash-icon point** (confirmed: process ends up `<defunct>` again). Same underlying issue as the
+  two bullets above — touching certain singletons/managers before they legitimately exist yet.
+  Fix: gate on the plain bool `hasInstance` first, and/or only touch it from a call site that's
+  inherently guaranteed to run after the singleton exists (see "The HUD problem" — moved to
+  `InputActionIndicatorPanel.LateUpdate`, which only runs once a target is assigned).
 - **Confirmed safe and in active use:** `SetResolution` prefix+postfix, `UpdateCanvasScale`
   prefix+postfix (this one now also mutates — see "The fix" above), the three `LetterBoxModifier`
   postfixes, `UpdateCanvasViewRect` postfix (log-only).

@@ -7,21 +7,22 @@ using UnityEngine.UI;
 namespace DaveTheDiverUltrawide;
 
 /// <summary>
-/// v0.4. Findings so far (see docs/research-notes.md):
-/// - Spoofing CameraResolution.k_TargetRatio to the real screen ratio reliably crashes the game
-///   natively (no managed exception) right as the CameraResolution singleton is destroyed during
-///   the logo->menu scene transition. Something downstream apparently assumes k_TargetRatio stays
-///   at its original (16:9) value. Left in as an opt-in, OFF by default.
-/// - CameraResolution.UpdateCameraRect is never called during startup (0 hits in logs) — not the
-///   real mechanism.
-/// - The real mechanism: CameraResolution.UpdateCanvasScale computes a centered 16:9 sub-rect and
-///   writes it to both the main camera's Camera.rect and the CameraResolution.m_CameraViewRect
-///   field (confirmed via logging: camera.rect went from the full (0,0,1,1)/3440x1440 right after
-///   SetResolution to a pillarboxed (0.13,0,0.74,1)/2560x1440 by the end of UpdateCanvasScale).
-///   This is the actual fix target: force both back to full after the original runs.
-/// - Hiding the LetterBoxModifier panels (MaskLeft/MaskRight) alone does NOT crash and does remove
-///   the decorative art, but on its own reveals plain black, not extended game content — expected,
-///   since without the UpdateCanvasScale fix the camera is still only rendering the 16:9 slice.
+/// v0.5. Findings so far (see docs/research-notes.md for the full trail):
+/// - The core world/camera fix (v0.4, confirmed working): CameraResolution.UpdateCanvasScale
+///   computes a centered 16:9 sub-rect and writes it to both the main camera's Camera.rect and the
+///   CameraResolution.m_CameraViewRect field. Postfix forces both back to full after the original
+///   runs, combined with hiding the LetterBoxModifier side panels.
+/// - CameraResolution.k_TargetRatio must never be overwritten (crashes on scene load) and
+///   CameraResolution.UpdateCameraRect/UpdateWideResolution/UpdateAutoResolution must not be
+///   patched at all (freeze/crash even for read-only logging) — see "Patch safety findings".
+/// - HUD/world-tracked UI (item pickup prompts etc.) still renders 16:9-locked. Native
+///   decompilation (Cpp2IL IL recovery, see native-decompile/README.md) revealed the positioning
+///   is anchor-*fraction* based (Camera.WorldToViewportPoint -> RectTransform.anchorMin/anchorMax),
+///   which is resolution-independent — meaning the two earlier Canvas-size-based fix attempts
+///   (EnableCanvasResizeFix, EnableCanvasScalerFix) could never have worked; they targeted the
+///   wrong layer. EnableIndicatorCameraFix targets the real mechanism instead (forces the camera
+///   used by WorldToViewportPoint to a full rect + ResetAspect() every frame, right before the
+///   game's own LateUpdate uses it) but is not yet confirmed on real hardware.
 /// </summary>
 [HarmonyPatch]
 internal static class UltrawidePatches
@@ -252,6 +253,14 @@ internal static class UltrawidePatches
             cam.rect = full;
         }
 
+        // A EvilFactory.CameraManager cross-check used to live here, but UpdateCanvasScale fires
+        // too early per scene (before that scene's CameraManager exists — hasInstance was false
+        // for 100% of samples across a full play session) AND accessing
+        // EvilFactory.SceneSingleton<CameraManager>.Instance at boot crashed the game outright.
+        // Moved to InputActionIndicatorPanel_LateUpdate_Prefix below, which only ever runs once a
+        // target is assigned — i.e. only during real gameplay, when a CameraManager is guaranteed
+        // to already exist. See docs/research-notes.md for the full story.
+
         // m_CameraViewRect is presumably meant to drive whatever consumes it (HUD safe-area
         // sizing, going by the field/method names) only when UpdateCanvasViewRect() itself runs —
         // our direct field write above bypasses that. Call it ourselves so the corrected value
@@ -334,6 +343,93 @@ internal static class UltrawidePatches
             : "m_Camera=null";
 
         return $"[Ultrawide] {from} {targetInfo} {rtInfo} {camInfo}";
+    }
+
+    // Native decompile of InputActionIndicatorPanel.LateUpdate (Cpp2IL IL-recovery — see
+    // native-decompile/README.md to regenerate) shows the real logic, despite garbled Vector2
+    // handling in a few spots:
+    //   Vector3 vector = m_Camera.WorldToViewportPoint(target.position + offset);
+    //   ... (a Singleton<EvilFactory.CameraManager>.Instance reference the decompile couldn't
+    //        fully resolve) ...
+    //   m_RectTransform.anchorMin = vector2;   // vector2 derived from `vector`
+    //   m_RectTransform.anchorMax = vector2;
+    //
+    // Positioning is anchor-fraction based (anchorMin/anchorMax, both set to the same [0,1]
+    // viewport fraction), which is inherently resolution/canvas-size independent — this is why
+    // EnableCanvasResizeFix and EnableCanvasScalerFix (which only ever changed canvas *size*)
+    // could never have fixed this: the bug isn't the canvas, it's the fraction computed by
+    // WorldToViewportPoint itself.
+    //
+    // Two concrete, evidence-based hypotheses for why that fraction comes out wrong toward the
+    // edges ("pulled toward center", matching a too-narrow effective FOV):
+    //  1. Camera.aspect can be manually locked in Unity (persists across resolution/rect changes
+    //     until Camera.ResetAspect() is called) — if something set it once for the original 16:9
+    //     pillarbox and never reset it, WorldToViewportPoint would keep computing fractions for
+    //     the old narrow aspect even though rendering itself (camera.rect) is already correct.
+    //  2. m_Camera here is cached via Camera.main in Awake(), which might not be the exact same
+    //     Camera object as EvilFactory.CameraManager.mainCamera (that class independently caches
+    //     GetComponent<Camera>() on itself) — if these differ, fixing one doesn't fix the other.
+    //     (Tried checking this from CameraResolution.UpdateCanvasScale — wrong place/timing, see
+    //     above.) LateUpdate only runs once m_TargetTransform is set, i.e. only during real
+    //     gameplay, when a CameraManager is guaranteed to already exist — the right place to check.
+    //
+    // Fix: right before the original method runs each frame, force whichever camera(s) are
+    // actually in play back to a full rect and un-lock their aspect. Cheap (a few property
+    // writes), and covers both hypotheses without needing to know which one is actually true.
+    [HarmonyPatch(typeof(InputActionIndicatorPanel), "LateUpdate")]
+    [HarmonyPrefix]
+    private static void InputActionIndicatorPanel_LateUpdate_Prefix(InputActionIndicatorPanel __instance)
+    {
+        if (!Plugin.EnableIndicatorCameraFix.Value || __instance.m_TargetTransform == null)
+        {
+            return;
+        }
+
+        try
+        {
+            Rect full = new Rect(0f, 0f, 1f, 1f);
+            Camera indicatorCam = __instance.m_Camera;
+            if (indicatorCam != null)
+            {
+                if (indicatorCam.rect != full)
+                {
+                    indicatorCam.rect = full;
+                }
+
+                indicatorCam.ResetAspect();
+            }
+
+            if (Plugin.EnableCameraManagerCrossCheck.Value
+                && EvilFactory.SceneSingleton<EvilFactory.CameraManager>.hasInstance)
+            {
+                EvilFactory.CameraManager gameplayCameraManager = EvilFactory.SceneSingleton<EvilFactory.CameraManager>.Instance;
+                Camera gameplayCam = gameplayCameraManager != null ? gameplayCameraManager.mainCamera : null;
+                if (gameplayCam != null)
+                {
+                    bool sameCamera = indicatorCam != null && indicatorCam.GetInstanceID() == gameplayCam.GetInstanceID();
+                    if (!sameCamera)
+                    {
+                        if (gameplayCam.rect != full)
+                        {
+                            gameplayCam.rect = full;
+                        }
+
+                        gameplayCam.ResetAspect();
+
+                        _indicatorLogFrameCounter++;
+                        if (_indicatorLogFrameCounter % 30 == 0)
+                        {
+                            Plugin.Instance.Log.LogInfo(
+                                $"[Ultrawide] LateUpdate: indicator camera '{(indicatorCam != null ? indicatorCam.name : "null")}' differs from EvilFactory.CameraManager.mainCamera '{gameplayCam.name}' — fixed both.");
+                        }
+                    }
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Instance.Log.LogInfo($"[Ultrawide] InputActionIndicatorPanel camera fix failed: {ex}");
+        }
     }
 
     [HarmonyPatch(typeof(InputActionIndicatorPanel), "LateUpdate")]
