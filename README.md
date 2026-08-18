@@ -24,22 +24,50 @@ This mod instead hooks the game's own resolution/camera code directly via
 [HarmonyX](https://github.com/BepInEx/HarmonyX) Il2Cpp patches, using the class the game itself
 uses for this (`CameraResolution`, see research notes) instead of fighting it from the outside.
 
-## Requirements
+## Installation
 
-- Dave the Diver (Steam), IL2CPP build
-- [BepInEx 6 (Unity.IL2CPP, Bleeding Edge)](https://builds.bepinex.dev/projects/bepinex_be)
-  installed into the game folder (this generates the `BepInEx/interop/*.dll` assemblies this
-  project builds against — run the game once after installing BepInEx before building)
-- .NET SDK 6.0+ to build
+This mod is a [BepInEx](https://github.com/BepInEx/BepInEx) plugin, so BepInEx itself has to be
+installed first — it's the loader that actually runs this mod's code inside the game.
 
-On Linux/Steam Deck via Proton, BepInEx's doorstop hook needs a DLL override to actually load,
-since Wine ships its own stub `winhttp.dll`. Add this Steam launch option for Dave the Diver:
+### 1. Install BepInEx 6 (IL2CPP)
+
+1. Go to the **[BepInEx 6 Bleeding Edge builds page](https://builds.bepinex.dev/projects/bepinex_be)**.
+2. Download the newest **`BepInEx-Unity.IL2CPP-win-x64-...zip`** (IL2CPP + win-x64 — Dave the
+   Diver needs this exact variant, not `win-x86` and not a Mono build; use the win-x64 build even
+   if you're on Linux/Steam Deck, since it still runs through Proton).
+3. Extract the **contents** of the zip directly into your Dave the Diver install folder — the same
+   folder that contains `DaveTheDiver.exe` (Steam → right-click Dave the Diver → Manage → Browse
+   local files). Afterwards that folder should directly contain a `BepInEx/` subfolder,
+   `winhttp.dll`, and `doorstop_config.ini` next to `DaveTheDiver.exe`.
+
+**On Linux/Steam Deck (Proton) only:** Wine ships its own stub `winhttp.dll`, which silently
+prevents BepInEx from loading unless you tell Proton to prefer the real one. In Steam, right-click
+Dave the Diver → Properties → **Launch Options**, and set it to:
 
 ```
 WINEDLLOVERRIDES="winhttp=n,b" %command%
 ```
 
-## Building
+4. Launch Dave the Diver once through Steam and let it fully reach the main menu, then close it
+   again. This first launch is what makes BepInEx generate the `BepInEx/interop/` and
+   `BepInEx/plugins/` folders the mod needs — without this step, installing the mod itself won't
+   do anything yet.
+
+### 2. Install this mod
+
+1. Grab the newest zip from this repo's **[Releases](../../releases)** page.
+2. Extract it into `Dave the Diver/BepInEx/plugins/` so you end up with
+   `Dave the Diver/BepInEx/plugins/DaveTheDiverUltrawide/DaveTheDiverUltrawide.dll`.
+3. Launch the game. If your monitor's resolution isn't already selected, pick it in
+   Options → Display.
+
+To confirm it's working, open `Dave the Diver/BepInEx/LogOutput.log` in a text editor and look for
+lines starting with `[Ultrawide]` — those are this mod's own log output.
+
+## Building (for development)
+
+Requires .NET SDK 6.0+ and BepInEx already installed in the game folder as in step 1 above (that's
+where the `BepInEx/interop/*.dll` assemblies this project builds against come from).
 
 Uses [Taskfile](https://taskfile.dev) (`brew install go-task` / see [Taskfile.yml](Taskfile.yml)
 for the full list). Set `DTD_GAME_DIR` once and building/deploying/log-watching all pick it up:
@@ -61,11 +89,6 @@ also still works — it just won't deploy for you.
 
 Alternatively, create a gitignored `Directory.Build.local.props` at the repo root instead of using
 the environment variable — see [Directory.Build.props](Directory.Build.props) for the format.
-
-## Installing (without building)
-
-Grab `DaveTheDiverUltrawide.dll` from a [release](../../releases) and drop it into
-`Dave the Diver/BepInEx/plugins/DaveTheDiverUltrawide/`.
 
 ## Releasing
 
