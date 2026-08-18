@@ -1,0 +1,84 @@
+version: '3'
+
+vars:
+  PROJECT: src/DaveTheDiverUltrawide/DaveTheDiverUltrawide.csproj
+  PLUGIN_NAME: DaveTheDiverUltrawide
+  CONFIG: '{{.CONFIG | default "Debug"}}'
+  OUT_DIR: 'src/DaveTheDiverUltrawide/bin/{{.CONFIG}}/net6.0'
+  # Falls back to $DTD_GAME_DIR if GAME_DIR isn't passed on the CLI, e.g.:
+  #   task deploy GAME_DIR=/other/path
+  GAME_DIR: '{{.GAME_DIR | default .DTD_GAME_DIR}}'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  restore:
+    desc: Restore NuGet dependencies
+    cmds:
+      - dotnet restore {{.PROJECT}}
+
+  build:
+    desc: Build the plugin
+    cmds:
+      - dotnet build {{.PROJECT}} -c {{.CONFIG}}
+    sources:
+      - src/DaveTheDiverUltrawide/**/*.cs
+      - '{{.PROJECT}}'
+    generates:
+      - '{{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll'
+
+  deploy:
+    desc: Copy the last build output into $GAME_DIR/BepInEx/plugins/
+    preconditions:
+      - sh: test -n "{{.GAME_DIR}}"
+        msg: 'GAME_DIR not set. Run: task deploy GAME_DIR="/path/to/Dave the Diver" (or export DTD_GAME_DIR)'
+      - sh: test -f "{{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll"
+        msg: 'No build output found at {{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll — run "task build" first'
+      - sh: test -d "{{.GAME_DIR}}/BepInEx/plugins"
+        msg: '{{.GAME_DIR}}/BepInEx/plugins does not exist — is BepInEx installed there and GAME_DIR correct?'
+    cmds:
+      - mkdir -p "{{.GAME_DIR}}/BepInEx/plugins/{{.PLUGIN_NAME}}"
+      - cp "{{.OUT_DIR}}/{{.PLUGIN_NAME}}.dll" "{{.GAME_DIR}}/BepInEx/plugins/{{.PLUGIN_NAME}}/"
+      - cp "{{.OUT_DIR}}/{{.PLUGIN_NAME}}.pdb" "{{.GAME_DIR}}/BepInEx/plugins/{{.PLUGIN_NAME}}/"
+      - echo "Deployed to {{.GAME_DIR}}/BepInEx/plugins/{{.PLUGIN_NAME}}/"
+
+  dev:
+    desc: Build, then deploy
+    cmds:
+      - task: build
+      - task: deploy
+
+  clean:
+    desc: Remove build artifacts (bin/obj)
+    cmds:
+      - dotnet clean {{.PROJECT}} -c {{.CONFIG}}
+      - rm -rf src/DaveTheDiverUltrawide/bin src/DaveTheDiverUltrawide/obj
+
+  log:
+    desc: Tail the game's BepInEx log live
+    preconditions:
+      - sh: test -n "{{.GAME_DIR}}"
+        msg: 'GAME_DIR not set. Run: task log GAME_DIR="/path/to/Dave the Diver" (or export DTD_GAME_DIR)'
+    cmds:
+      - tail -f "{{.GAME_DIR}}/BepInEx/LogOutput.log"
+
+  log:ultrawide:
+    desc: Show only this mod's log lines from the last game run
+    preconditions:
+      - sh: test -n "{{.GAME_DIR}}"
+        msg: 'GAME_DIR not set. Run: task log:ultrawide GAME_DIR="/path/to/Dave the Diver" (or export DTD_GAME_DIR)'
+    cmds:
+      - grep -E "\[Ultrawide\]|Ultrawide Fix|HarmonyX.*Error" "{{.GAME_DIR}}/BepInEx/LogOutput.log" || true
+
+  decompile:
+    desc: 'Decompile one type from the game''s interop assembly, e.g.: task decompile TYPE=CameraResolution'
+    preconditions:
+      - sh: test -n "{{.GAME_DIR}}"
+        msg: 'GAME_DIR not set. Run: task decompile TYPE=Foo GAME_DIR="/path/to/Dave the Diver" (or export DTD_GAME_DIR)'
+      - sh: test -n "{{.TYPE}}"
+        msg: 'TYPE not set. Usage: task decompile TYPE=CameraResolution'
+    cmds:
+      - ilspycmd -t "{{.TYPE}}" "{{.GAME_DIR}}/BepInEx/interop/Assembly-CSharp.dll"

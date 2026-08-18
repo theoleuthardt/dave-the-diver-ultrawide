@@ -1,0 +1,28 @@
+<Project>
+  <!--
+    GameDir must point at your local "Dave the Diver" Steam install (the folder
+    containing DaveTheDiver.exe and, after installing BepInEx once, a BepInEx/
+    subfolder with core/ and interop/ DLLs).
+
+    Set it either via an environment variable before building:
+      export DTD_GAME_DIR="/path/to/Dave the Diver"
+    or by creating a local, gitignored override file:
+      Directory.Build.local.props
+        <Project>
+          <PropertyGroup>
+            <GameDir>/path/to/Dave the Diver</GameDir>
+          </PropertyGroup>
+        </Project>
+  -->
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == '' AND '$(DTD_GAME_DIR)' != ''">$(DTD_GAME_DIR)</GameDir>
+  </PropertyGroup>
+
+  <Import Project="Directory.Build.local.props" Condition="Exists('Directory.Build.local.props')" />
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFramework>net6.0</TargetFramework>
+  </PropertyGroup>
+</Project>

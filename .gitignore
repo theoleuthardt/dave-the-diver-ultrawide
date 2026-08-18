@@ -1,0 +1,9 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+.task/
+
+# Local override of the game install path, never commit a machine-specific path
+Directory.Build.local.props
