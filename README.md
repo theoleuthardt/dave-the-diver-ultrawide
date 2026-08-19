@@ -5,16 +5,16 @@ the themed pillarbox bars Dave the Diver renders on ultrawide monitors (e.g. 21:
 instead of actually using the extra horizontal space.
 
 **Status: core fix confirmed working on a real 3440x1440/21:9 setup — in-game (diving) now renders
-across the full width.** HUD/world-tracked UI elements (item pickup prompts etc.) still render as
-if the screen were 16:9; two Canvas-based fix attempts didn't work, but native decompilation (see
-[docs/research-notes.md](docs/research-notes.md)) found the real mechanism and a third attempt
-targeting it is implemented and awaiting real-hardware testing. The sushi restaurant turned out to
-run its own, entirely separate camera/UI system with the same root-cause bug (locked camera
-aspect); a first patch attempt at it (`EnableSushiBarCameraFix`) **confirmed crashed the game
-outright on real hardware** (fatal native AccessViolationException at boot, see
-[docs/research-notes.md](docs/research-notes.md)) and is disabled by default pending a safer
-implementation. The main menu's pillarbox bars are a content limitation, not fixable via code. See
-[Known limitations](#known-limitations--open-questions) for details.
+across the full width.** HUD/world-tracked UI elements (item pickup prompts, notification banners)
+are still mispositioned/misbehaving, on real hardware, after four separate fix attempts across
+diving and the sushi restaurant — see [Known limitations](#known-limitations--open-questions) and
+[docs/research-notes.md](docs/research-notes.md) for the full trail, including one attempt
+(`EnableSushiBarCameraFix`) that **confirmed crashed the game outright** on real hardware (now
+disabled by default). The most recent diving attempt ran correctly and safely but was confirmed on
+real hardware *not* to fix the reported symptom — the camera state it targeted (rect, aspect,
+identity) was already correct, so the actual bug is still unidentified and needs a deeper native
+decompile pass than has been done so far. Paused for now. The main menu's pillarbox bars are a
+content limitation, not fixable via code.
 
 ## Background
 

@@ -188,6 +188,59 @@ problem entirely). Each frame, right before the original method runs: forces `m_
 hypothesis 2). All wrapped in try/catch, cheap enough to run every frame. See
 `UltrawidePatches.InputActionIndicatorPanel_LateUpdate_Prefix`.
 
+## v0.6.1 real-hardware result: interact-prompt fix runs correctly and still doesn't fix the symptom — both prior hypotheses refuted
+
+Tested after the crash fix above (game reached the actual dive scene `A02_01_01` this time, no
+crash). Conclusion: **the button is still reported "far from where it should be."** But the log
+data now rules out both hypotheses the fix was built on, which is a real, useful result — it means
+this specific line of investigation is a dead end, not that the fix silently failed to run.
+
+Evidence, straight from this run's `BepInEx/LogOutput.log`:
+
+- **The patch demonstrably ran.** 358 `InputActionIndicatorPanel`/`LateUpdate`/`ShowInteractionButton`
+  log lines while diving in `A02_01_01`, e.g.:
+  `ShowInteractionButton target='Chest_Item(Clone)' ... cam='MainCamera' rect=(0,0,1,1) pixelRect=(0,0,3440,1440)`.
+- **Hypothesis 1 (locked aspect) is refuted.** `aspect=2.3888888` (the correct 3440/1440 value) was
+  already logged at the *scene-load* `UpdateCanvasScale` call for `A02_01_01`, i.e. **before** our
+  per-frame `ResetAspect()` fix would have needed to correct anything. The camera's aspect was
+  never actually wrong at any point this run.
+- **Hypothesis 2 (indicator camera ≠ `EvilFactory.CameraManager.mainCamera`) is refuted.** The
+  cross-check log line (`"...differs from EvilFactory.CameraManager.mainCamera... — fixed both."`)
+  never fired once (0 matches) despite hundreds of `LateUpdate` calls while a prompt was visible —
+  either they were always the same Camera object, or the check never had a live instance to compare
+  against either way; either way, this was not the source of the wrong position.
+- Camera `rect` and `pixelRect` were correct (full window) at every single logged sample.
+
+**So: the camera itself — its rect, its aspect, and (as far as we could tell) its identity — was
+already correct throughout, and the button was still wrong.** That means the actual bug is
+downstream of `WorldToViewportPoint`, not in the camera state feeding it. This matches something
+flagged but never chased down in the original native decompile of
+`InputActionIndicatorPanel.LateUpdate`:
+
+```csharp
+Vector3 viewportPoint = m_Camera.WorldToViewportPoint(m_TargetTransform.position /* + m_Offset */);
+// ... a Singleton<EvilFactory.CameraManager>.Instance reference the decompile couldn't
+//     fully resolve — presumably used somewhere in what follows ...
+m_RectTransform.anchorMin = /* derived from viewportPoint.x/y */;
+```
+
+Cpp2IL's IL recovery never resolved what that `CameraManager` reference actually *does* with the
+raw viewport point before it becomes `anchorMin`/`anchorMax` — we only ever confirmed *that* it's
+referenced, not *how*. Given the camera itself is now confirmed clean, that unresolved step (some
+transform/offset/zoom-compensation applied between the raw `WorldToViewportPoint` result and the
+final anchor value, done via `CameraManager` rather than the camera directly) is now the leading
+suspect, and needs a cleaner decompile pass to actually read (this session's Cpp2IL run garbled the
+exact `Vector2`/struct math around this specific call, same caveat documented in
+`native-decompile/README.md`) — plain Cpp2IL/ilspycmd may not be enough; the next attempt likely
+needs the heavier Il2CppDumper+Ghidra route mentioned early in this doc and never yet tried, or a
+targeted look at whatever `EvilFactory.CameraManager` method actually gets called from that site
+specifically (not just its `mainCamera` getter, which is all that's been read so far).
+
+**Left `EnableIndicatorCameraFix`/`EnableCameraManagerCrossCheck` on by default** — confirmed
+harmless (no crash, no regression observed) even though confirmed *ineffective* at the reported
+symptom, same treatment already given to `EnableCanvasScalerFix`. Not chasing this further this
+session — see the "Session paused" note at the end of this document.
+
 ## `EnableSushiBarCameraFix` (v0.6.0) confirmed to crash the game outright — disabled in v0.6.1
 
 Real-hardware test of v0.6.0: the game hung past the MINTROCKET logo, partway through the loading
@@ -571,3 +624,50 @@ ilspycmd -l e "BepInEx/interop/Assembly-CSharp.dll" > enumlist.txt
 # decompile one specific type
 ilspycmd -t CameraResolution "BepInEx/interop/Assembly-CSharp.dll"
 ```
+
+## Session paused (2026-08-19) — status for whoever picks this up next
+
+Working and confirmed on real hardware: the core fix (full-width world rendering while diving,
+`EnableCameraRectFix` + `EnableLetterboxHide`, v0.4.0). Everything HUD-related is still broken
+despite four separate fix attempts this session, three of them confirmed harmless-but-ineffective
+and one confirmed to crash the game outright:
+
+| Target | Patch | Real-hardware result |
+|---|---|---|
+| Diving interact-prompt canvases | `EnableCanvasResizeFix` | **Confirmed harmful** — made positioning worse, broke part of the boat HUD, caused edge distortion. Off by default. |
+| Diving interact-prompt canvases | `EnableCanvasScalerFix` | Confirmed safe, confirmed no effect. Off by default. |
+| Diving interact-prompt camera | `EnableIndicatorCameraFix` / `EnableCameraManagerCrossCheck` | Confirmed safe **and confirmed running correctly** (358 log hits in one dive), but confirmed **no effect** — camera rect/aspect/identity were already correct throughout, so this targeted the wrong thing. On by default (harmless). |
+| Sushi restaurant camera | `EnableSushiBarCameraFix` | **Confirmed crashes the game** (fatal `AccessViolationException` at boot, before the main menu). Off by default. |
+
+**What's actually still unknown**, i.e. where the next session should start:
+
+1. **The real diving interact-prompt bug.** Now that the camera itself is confirmed correct, the
+   remaining suspect is whatever the decompile-unresolved `Singleton<EvilFactory.CameraManager>.Instance`
+   reference inside `InputActionIndicatorPanel.LateUpdate` actually *does* between
+   `WorldToViewportPoint` and the final `anchorMin`/`anchorMax` write (see the "both hypotheses
+   refuted" section above). Cpp2IL/ilspycmd couldn't recover that specific piece of Vector2/struct
+   math cleanly. Needs either a cleaner decompile (Il2CppDumper+Ghidra, mentioned early in this doc
+   but never actually tried) or reading `EvilFactory.CameraManager`'s methods for anything that
+   looks like a screen-position/zoom compensation, not just its `mainCamera` getter (all that's
+   been read of that class so far).
+2. **A working, non-crashing sushi-restaurant camera fix.** `EnableSushiBarCameraFix`'s idea (fix
+   `SushiBarManager.mainCamera`'s rect/aspect) may still be right in principle — it crashed because
+   of *where* it hooked (a shared property getter, called from unpredictable early-boot contexts),
+   not necessarily because the target camera is wrong. Needs moving to a call site only reachable
+   during real sushi-bar gameplay, most likely `CustomerActionInfo.UpdateAnchor()` (mirroring
+   exactly how `EnableCameraManagerCrossCheck` was moved off `CameraResolution.UpdateCanvasScale`
+   and onto `InputActionIndicatorPanel.LateUpdate` for the same class of problem, diving-side).
+   Not attempted — this session ended before getting back to it.
+3. **Permanently-visible ammo/fish-caught notification banners while diving.** Not traced to a
+   specific class this session at all (see the dedicated section above for the working hypothesis —
+   stale off-canvas hide position). Nothing implemented.
+4. **Dave's sushi-restaurant stamina gauge** (`Common.Contents.DaveMoveStaminaUI`) and **general
+   edge-of-screen visibility/perspective issues in the sushi restaurant** — both hypothesized to
+   share the same root cause as item 2 above (the sushi restaurant's own separate, still-unfixed
+   camera), not independently tested.
+
+None of the diving-side patches (`EnableCameraRectFix`, `EnableLetterboxHide`,
+`EnableIndicatorCameraFix`, `EnableCameraManagerCrossCheck`) are harmful, so there's no reason to
+revert anything currently on by default other than `EnableSushiBarCameraFix`, which already
+defaults off. The mod as shipped is safe to use for its one confirmed-working feature (full-width
+diving) and otherwise a no-op/known-ineffective for the rest.
