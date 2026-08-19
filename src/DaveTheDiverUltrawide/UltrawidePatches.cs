@@ -380,11 +380,19 @@ internal static class UltrawidePatches
     [HarmonyPrefix]
     private static void InputActionIndicatorPanel_LateUpdate_Prefix(InputActionIndicatorPanel __instance)
     {
-        if (!Plugin.EnableIndicatorCameraFix.Value || __instance.m_TargetTransform == null)
+        if (!Plugin.EnableIndicatorCameraFix.Value)
         {
             return;
         }
 
+        // Deliberately NOT gated on m_TargetTransform != null (unlike the original version of this
+        // fix): LateUpdate fires every frame regardless of whether a prompt is currently visible,
+        // and gating the camera reset on "a prompt happens to be showing right now" meant the
+        // camera's aspect was only ever corrected for the brief windows a prompt was on screen —
+        // any general world-render distortion near the screen edges the rest of the time (reported
+        // live: "fisheye" look while diving, worse away from center) would have gone right back to
+        // being wrong the instant no prompt was visible, since nothing else keeps resetting it.
+        // Cheap enough (a few property writes) to just always do this every frame instead.
         try
         {
             Rect full = new Rect(0f, 0f, 1f, 1f);
