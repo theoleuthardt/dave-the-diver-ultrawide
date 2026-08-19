@@ -10,9 +10,11 @@ if the screen were 16:9; two Canvas-based fix attempts didn't work, but native d
 [docs/research-notes.md](docs/research-notes.md)) found the real mechanism and a third attempt
 targeting it is implemented and awaiting real-hardware testing. The sushi restaurant turned out to
 run its own, entirely separate camera/UI system with the same root-cause bug (locked camera
-aspect) — a fourth patch targeting it (`EnableSushiBarCameraFix`) is implemented and also awaiting
-real-hardware testing. The main menu's pillarbox bars are a content limitation, not fixable via
-code. See [Known limitations](#known-limitations--open-questions) for details.
+aspect); a first patch attempt at it (`EnableSushiBarCameraFix`) **confirmed crashed the game
+outright on real hardware** (fatal native AccessViolationException at boot, see
+[docs/research-notes.md](docs/research-notes.md)) and is disabled by default pending a safer
+implementation. The main menu's pillarbox bars are a content limitation, not fixable via code. See
+[Known limitations](#known-limitations--open-questions) for details.
 
 ## Background
 

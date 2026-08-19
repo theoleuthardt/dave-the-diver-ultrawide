@@ -10,7 +10,7 @@ public class Plugin : BasePlugin
 {
     public const string PluginGuid = "theo.davethediver.ultrawidefix";
     public const string PluginName = "Dave the Diver Ultrawide Fix";
-    public const string PluginVersion = "0.6.0";
+    public const string PluginVersion = "0.6.1";
 
     internal static Plugin Instance { get; private set; } = null!;
 
@@ -52,8 +52,8 @@ public class Plugin : BasePlugin
             "Patches", "EnableCameraManagerCrossCheck", true,
             "Sub-part of EnableIndicatorCameraFix (has no effect if that's off): also checks whether EvilFactory.CameraManager.mainCamera is a *different* Camera object than the one InputActionIndicatorPanel uses, and fixes that one too if so. Previously lived in CameraResolution.UpdateCanvasScale and CONFIRMED TO CRASH THE GAME there (ran too early, before any dive scene/CameraManager existed) — moved here, where it only ever runs once an interact prompt is actually visible, i.e. guaranteed to be in a real gameplay scene. Should be safe now, but watch BepInEx/LogOutput.log after enabling.");
         EnableSushiBarCameraFix = Config.Bind(
-            "Patches", "EnableSushiBarCameraFix", true,
-            "NEW (untested on real hardware yet): the sushi restaurant runs an entirely separate camera from diving (SushiBarManager.mainCamera, cached via Camera.main in its own Awake_Impl — unrelated to EvilFactory.CameraManager or CameraResolution). Native decompile found the game's own CustomerActionInfo.UpdateAnchor (which positions the sushi-bar interact/serve prompt) already tries to sync this camera's .rect from CameraResolution.MainCamera.rect each frame, but never resets its .aspect — the same 'locked to the original 16:9 aspect' bug already fixed for the diving interact prompt, just on a different camera object. Postfixes the SushiBarManager.mainCamera property getter (called continuously every frame while any action-info prompt is bound, i.e. throughout normal restaurant play) to force the camera's rect to full and call Camera.ResetAspect() every time it's fetched. Since rect/aspect are properties on the shared Camera component, this should also fix everything else that camera renders — world geometry near the screen edges and Dave's world-space-tracked stamina gauge (Common.Contents.DaveMoveStaminaUI) included, not just the interact prompt. See docs/research-notes.md.");
+            "Patches", "EnableSushiBarCameraFix", false,
+            "CONFIRMED TO CRASH THE GAME (fatal System.AccessViolationException / native memory corruption inside Camera.ResetAspect(), process dies outright — see BepInEx/ErrorLog.log). The SushiBarManager.mainCamera getter this patches is called extremely early during boot (observed: the DR_Logo scene, right after the publisher logo, long before the main menu or any real sushi-bar gameplay) — same class of problem as the EvilFactory.CameraManager.Instance boot crash documented for EnableCameraManagerCrossCheck below, just on a different singleton. Keep this OFF. Needs the same treatment that fixed that one: move the fix to a call site guaranteed to only run during actual sushi-bar gameplay (e.g. CustomerActionInfo.UpdateAnchor, which only runs once a prompt/action is actually bound) instead of patching the shared getter directly. See docs/research-notes.md.");
 
         var harmony = new Harmony(PluginGuid);
         harmony.PatchAll(typeof(UltrawidePatches));

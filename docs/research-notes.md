@@ -188,6 +188,49 @@ problem entirely). Each frame, right before the original method runs: forces `m_
 hypothesis 2). All wrapped in try/catch, cheap enough to run every frame. See
 `UltrawidePatches.InputActionIndicatorPanel_LateUpdate_Prefix`.
 
+## `EnableSushiBarCameraFix` (v0.6.0) confirmed to crash the game outright — disabled in v0.6.1
+
+Real-hardware test of v0.6.0: the game hung past the MINTROCKET logo, partway through the loading
+bar before the main menu, and the process was found dead (not just frozen). `BepInEx/ErrorLog.log`
+had the real cause — a fatal, unhandled native exception:
+
+```
+Fatal error. System.AccessViolationException: Attempted to read or write protected memory.
+   at Il2CppInterop.Runtime.IL2CPP.il2cpp_runtime_invoke(...)
+   at UnityEngine.Camera.ResetAspect()
+   at DaveTheDiverUltrawide.UltrawidePatches.SushiBarManager_MainCamera_Postfix(UnityEngine.Camera)
+   at DynamicClass.DMD<SushiBarManager::get_mainCamera>(SushiBarManager)
+```
+
+`BepInEx/LogOutput.log` confirms exactly where: the last thing logged was the `DR_Logo` scene's
+canvas dump — i.e. this crashed **during the publisher-logo scene, before the main menu**, nowhere
+near the sushi restaurant. `SushiBarManager.mainCamera`'s getter is apparently called that early
+(presumably as part of some generic "warm up every `Singleton<T>` manager at boot" pass this game
+does — the same category of thing that made `EvilFactory.CameraManager.Instance`, `InitResolution`,
+and `CheckResoultionForWindow` all misbehave at early boot too, see "Patch safety findings" below).
+At that point the `Camera` our postfix received was apparently not a validly-initialized native
+IL2CPP object yet — calling `Camera.ResetAspect()` (a native invoke) on it corrupted memory and
+killed the process outright, not a managed exception Harmony/BepInEx could catch or recover from.
+
+**Fixed by disabling, not by hardening the same call site:** `EnableSushiBarCameraFix` now
+defaults to `false`. Patching the shared `mainCamera` *getter* directly turned out to be exactly
+the mistake `EnableCameraManagerCrossCheck` already taught this project not to make (see its own
+history further down) — a shared accessor gets called from contexts we don't control, including
+ones long before the feature it's nominally for (the sushi restaurant) is ever reached. The fix
+that actually worked for the equivalent diving problem was moving the patch to a call site
+guaranteed to only run during real gameplay (`InputActionIndicatorPanel.LateUpdate`, only ever
+called once that component exists in an actual dive scene). The sushi-bar equivalent needs the
+same move — most likely onto `CustomerActionInfo.UpdateAnchor()` (only runs once
+`m_WorldTransform != null`, i.e. an actual interact/action prompt is bound, which in turn only
+happens once `StaffDave` exists, i.e. genuinely inside the sushi restaurant) — not yet attempted;
+deliberately not re-guessing at this again in the same session that just caused a hard crash.
+
+**Also important:** BepInEx's config file had already been rewritten with
+`EnableSushiBarCameraFix = true` (the v0.6.0 default) by the time the crash happened on next
+launch — simply changing the code default is not enough on its own, the saved value in
+`BepInEx/config/theo.davethediver.ultrawidefix.cfg` overrides it. Deleted that file again (as with
+the earlier stale-build cleanup below) so it regenerates with the corrected `false` default.
+
 ## Diving: yesterday's real-hardware test used a stale build, not v0.5.0
 
 Explains why "the interact-prompt fix brought nothing" in yesterday's test: the DLL actually
