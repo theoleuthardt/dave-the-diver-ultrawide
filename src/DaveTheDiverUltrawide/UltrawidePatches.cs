@@ -501,4 +501,51 @@ internal static class UltrawidePatches
         Plugin.Instance.Log.LogInfo(
             $"{DescribeIndicator("ShowInstantInteractionButton", __instance)} offset={offset}");
     }
+
+    // ---- Sushi restaurant camera fix ----
+    //
+    // The sushi restaurant does NOT reuse InputActionIndicatorPanel/InteractionIndicatorPanel at
+    // all (confirmed via native decompile) — its interact/serving prompt is DaveActionInfo ->
+    // CustomerActionInfo, an entirely separate class hierarchy, and its camera is
+    // SushiBarManager.mainCamera (cached via Camera.main in SushiBarManager.Awake_Impl), not
+    // EvilFactory.CameraManager or CameraResolution.MainCamera.
+    //
+    // CustomerActionInfo.UpdateAnchor (runs every frame while any prompt is bound, via
+    // DaveActionInfo.LateUpdate) already contains the game's own logic to keep this camera's
+    // .rect synced to CameraResolution.MainCamera.rect — but never resets its .aspect, same root
+    // cause already fixed for diving's InputActionIndicatorPanel (see EnableIndicatorCameraFix
+    // above): a Camera.aspect set once for the original 16:9 pillarbox stays locked until
+    // Camera.ResetAspect() is called, independent of camera.rect being correct.
+    //
+    // Fixed at the source instead of per-consumer: postfixing the mainCamera property getter
+    // itself means every caller (CustomerActionInfo.TargetCamera, MainCanvas.Init, whatever else
+    // reads it) gets an already-corrected Camera — and since rect/aspect live on the shared Camera
+    // component, not on the getter, this should also fix everything else that same camera renders
+    // (world geometry near the edges, Dave's world-space-tracked stamina gauge
+    // Common.Contents.DaveMoveStaminaUI) as long as the getter keeps getting called regularly,
+    // which it does throughout normal restaurant play.
+    [HarmonyPatch(typeof(SushiBarManager), nameof(SushiBarManager.mainCamera), MethodType.Getter)]
+    [HarmonyPostfix]
+    private static void SushiBarManager_MainCamera_Postfix(Camera __result)
+    {
+        if (!Plugin.EnableSushiBarCameraFix.Value || __result == null)
+        {
+            return;
+        }
+
+        try
+        {
+            Rect full = new Rect(0f, 0f, 1f, 1f);
+            if (__result.rect != full)
+            {
+                __result.rect = full;
+            }
+
+            __result.ResetAspect();
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Instance.Log.LogInfo($"[Ultrawide] SushiBarManager.mainCamera fix failed: {ex}");
+        }
+    }
 }

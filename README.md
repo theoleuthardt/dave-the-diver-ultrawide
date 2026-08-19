@@ -8,9 +8,11 @@ instead of actually using the extra horizontal space.
 across the full width.** HUD/world-tracked UI elements (item pickup prompts etc.) still render as
 if the screen were 16:9; two Canvas-based fix attempts didn't work, but native decompilation (see
 [docs/research-notes.md](docs/research-notes.md)) found the real mechanism and a third attempt
-targeting it is implemented and awaiting real-hardware testing. The main menu's pillarbox bars are
-a content limitation, not fixable via code. See
-[Known limitations](#known-limitations--open-questions) for details.
+targeting it is implemented and awaiting real-hardware testing. The sushi restaurant turned out to
+run its own, entirely separate camera/UI system with the same root-cause bug (locked camera
+aspect) — a fourth patch targeting it (`EnableSushiBarCameraFix`) is implemented and also awaiting
+real-hardware testing. The main menu's pillarbox bars are a content limitation, not fixable via
+code. See [Known limitations](#known-limitations--open-questions) for details.
 
 ## Background
 

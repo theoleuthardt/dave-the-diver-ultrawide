@@ -188,6 +188,118 @@ problem entirely). Each frame, right before the original method runs: forces `m_
 hypothesis 2). All wrapped in try/catch, cheap enough to run every frame. See
 `UltrawidePatches.InputActionIndicatorPanel_LateUpdate_Prefix`.
 
+## Sushi restaurant HUD: two more, previously-unpatched mechanisms found (2026-08-19 native decompile)
+
+Re-ran Cpp2IL IL recovery against the live install (`/var/mnt/storage0/SteamLibrary/.../Dave the
+Diver`, same procedure as above) to answer two open questions: (1) does the sushi restaurant's
+interact prompt ("place food" etc.) actually go through the same `InteractionIndicatorPanel` the
+v0.5.0 fix targets, and (2) a live report that Dave's stamina/endurance gauge in the sushi
+restaurant is also mispositioned, fisheye-like, worse away from screen center. Findings:
+
+- **The sushi restaurant's interact prompt is NOT the same component as the diving one — v0.5.0's
+  `EnableIndicatorCameraFix` does not cover it.** Diving: `InteractionTrigger_InGame` (implements
+  `IInteractionObject`) feeds `PlayerCharacter.EnqueueInteractObject`, which calls
+  `_inputActionController.GetInteractionActionPanel().ShowInteractionButton(...)` — the
+  `InteractionIndicatorPanel : InputActionIndicatorPanel` our patch targets. Sushi restaurant:
+  `SushiBarInteractionTrigger` (implements the unrelated `IStaffDaveInteraction`) instead feeds
+  `StaffDave.m_ActionInfoUI`, which is bound in `StaffDave.Spawn()` from
+  `Singleton<SushiBarMainCanvasManager>.Instance.m_DaveActionPanel` — an `InteractableInfoUI`
+  (base class `InfoUI`, defined in a separate "Toolbox" module Cpp2IL didn't recover source for
+  here, so its actual positioning code is still unread). Different trigger interfaces, different
+  panel classes, different owning managers — two independent systems that happen to look like the
+  same feature. Not yet decompiled further; `InfoUI`/`InteractableInfoUI`'s positioning method
+  (equivalent of `InputActionIndicatorPanel.LateUpdate`) is the next thing to read before any fix
+  attempt here.
+- **Also confirmed: the sushi restaurant runs its own separate camera system,
+  `SushiBarCameraManager` (fields `m_CamMain`/`m_CamBackground`/`m_CamBackgroundInterior`), not
+  `EvilFactory.CameraManager`.** `EnableCameraManagerCrossCheck` (part of the v0.5.0 fix) only
+  knows about `EvilFactory.CameraManager` — it should just no-op harmlessly in the sushi
+  restaurant (`SceneSingleton<CameraManager>.hasInstance` presumably false there), but it also
+  means the sushi bar never gets the cross-check's benefit even in principle. Any future fix
+  touching sushi-restaurant cameras needs to go through `SushiBarCameraManager`, not
+  `EvilFactory.CameraManager`.
+- **New, separate bug found live-reported by the user: Dave's stamina/endurance gauge
+  (`Common.Contents.DaveMoveStaminaUI`) is completely unpatched and uses a third, different
+  positioning mechanism again** — not anchor-fraction (`InputActionIndicatorPanel`'s approach),
+  not yet-unread `InfoUI`'s approach, but a raw `LateUpdate` that does
+  `transform.position = _target.position (+ offset, decompile lost the exact op)`. Directly
+  copying world position onto its own `transform.position` only makes sense for a
+  `RenderMode.WorldSpace` Canvas element, positioned by the scene camera's normal 3D projection
+  (view/projection matrix) rather than `WorldToViewportPoint`+anchors. This class has zero Harmony
+  patches on it currently. The reported symptom (accurate near center, increasingly displaced
+  toward edges, "relative to camera angle") is the same signature as the two aspect-lock
+  hypotheses already confirmed for `InputActionIndicatorPanel` — consistent with whichever camera
+  renders this WorldSpace canvas (presumably `SushiBarCameraManager.m_CamMain`) also having a
+  stale/locked aspect. Not yet fixed or even diagnostically logged — no patch attempted this
+  session due to time constraints; needs the same log-first-then-fix treatment as
+  `InputActionIndicatorPanel` got (see "Patch safety findings" below for why: touching a
+  never-before-patched method here cold, without a diagnostic pass first, risks the same class of
+  freeze/crash seen with `CameraResolution.UpdateWideResolution` et al.). Research notes at
+  `docs/research-notes.md` — same file — has the full precedent for that caution.
+
+**Net implication for v0.5.0 as shipped:** the diving interact-prompt fix (`InputActionIndicatorPanel`)
+is real and unrelated to the sushi restaurant. The sushi restaurant's food-placement prompt and
+Dave's stamina gauge there are two more, still-unfixed, previously-unidentified bugs.
+
+## Third report: general edge-of-screen visibility/perspective problems (sushi restaurant)
+
+Live user report, same session: independent of the prompt-positioning and stamina-gauge bugs
+above, the camera itself is "generally bad" at the far left/right in the sushi restaurant — some
+things just aren't visible from that part of the screen, described as a perspective problem rather
+than a positioning-of-a-UI-element problem. Not independently decompiled/confirmed as its own
+mechanism — see the next section, which found a single root cause that plausibly explains all
+three reports (prompt positioning, stamina gauge, and this one) at once, since all three are
+downstream of the same camera object's projection.
+
+## Root cause found and fixed (v0.6.0, not yet tested on real hardware): `SushiBarManager.mainCamera`
+
+Follow-up native decompile (`DaveActionInfo` → base class `DefaultCustomerActionInfo` → base class
+`CustomerActionInfo`) found the actual mechanism, and it explains all three sushi-restaurant
+reports above with one root cause:
+
+- `CustomerActionInfo.TargetCamera` (used by `DaveActionInfo`/`UpdateAnchor` to position the
+  interact/serving prompt) resolves to `Singleton<SushiBarManager>.Instance.mainCamera` — a
+  **completely separate camera from diving's `EvilFactory.CameraManager`/`CameraResolution`**,
+  cached via `Camera.main` in `SushiBarManager.Awake_Impl()` (same "cache once via `Camera.main`"
+  pattern as `InputActionIndicatorPanel.m_Camera`, just in a different class).
+- `CustomerActionInfo.UpdateAnchor()` (runs every frame via `DaveActionInfo.LateUpdate` while any
+  prompt is bound — which, per `StaffDave.Spawn()` binding `m_ActionInfoUI` immediately, is
+  effectively continuously during normal restaurant play) **already contains the game's own logic
+  to sync this camera's `.rect` to `CameraResolution.MainCamera.rect` every frame** — but never
+  touches `.aspect`. Exactly the same root cause already confirmed and fixed for diving's
+  `InputActionIndicatorPanel` (a `Camera.aspect` set once for the original 16:9 pillarbox stays
+  locked until `Camera.ResetAspect()` is called, independent of `.rect` being correct) — just
+  affecting a different camera object this time, one our v0.5.0 fix never touched.
+- Because `.rect`/`.aspect` are properties on the shared `Camera` *component*, not something scoped
+  to whoever reads them, a locked-aspect `SushiBarManager.mainCamera` would distort **everything it
+  renders**, not just the anchor-fraction interact prompt: normal 3D/2D world geometry (explaining
+  the "can't see things at the far left/right, looks like a perspective problem" report) and any
+  world-space-tracked UI drawn through it (`Common.Contents.DaveMoveStaminaUI`'s stamina gauge,
+  which just does `transform.position = target.position` and relies entirely on the rendering
+  camera's projection to end up in the right place on screen). One camera, one bug, three visible
+  symptoms.
+
+**Fix implemented (`EnableSushiBarCameraFix`, default on, v0.6.0):** rather than patching each
+consumer separately, a `HarmonyPostfix` on the `SushiBarManager.mainCamera` *property getter*
+itself — every time anything fetches this camera (which happens continuously during restaurant
+play via `UpdateAnchor` alone), force `.rect` back to full and call `.ResetAspect()`. Fixing it at
+the shared accessor should cover the interact prompt, the stamina gauge, and general world
+rendering at the edges in one patch, without needing to separately identify and patch
+`DaveMoveStaminaUI` or `CustomerActionInfo.UpdateAnchor` directly. See
+`UltrawidePatches.SushiBarManager_MainCamera_Postfix`.
+
+**Not yet tested on real hardware — this is a single, deliberately minimal patch (one Harmony
+postfix on a plain property getter, not a method with any known recursion/reentrancy risk) chosen
+specifically because only one real-hardware test run was available this session.** If it doesn't
+fully resolve the symptoms, the next things to check: (1) whether `SushiBarManager.mainCamera` is
+actually the camera Unity uses to render the restaurant scene, vs. e.g. `SushiBarCameraManager`'s
+`m_CamMain`/`m_CamBackground`/`m_CamBackgroundInterior` (a third, still-unexamined camera class
+found in the same investigation, fields suggesting a background/interior camera split that
+`SushiBarManager.mainCamera` may not cover) doing the actual rendering while `SushiBarManager`'s
+camera is used only for UI/raycasting; (2) whether `CustomerActionInfo.HasInlineCamera` objects
+(which bypass `SushiBarManager.mainCamera` entirely in favor of `m_InlineCamera`) account for any
+remaining mispositioned prompts.
+
 ## Patch safety findings (from real on-device testing)
 
 Live-tested against the actual 3440x1440 setup, one change at a time. These are load-bearing
